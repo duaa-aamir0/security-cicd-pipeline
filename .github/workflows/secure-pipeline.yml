@@ -64,8 +64,7 @@ jobs:
         uses: returntocorp/semgrep-action@v1
         with:
           config: auto  # Use Semgrep's default rulesets
-          # Semgrep action automatically uploads to GitHub Security tab if you have SARIF enabled
-          generateSarif: true
+          publish-token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Save Semgrep JSON report
         if: always()
@@ -144,7 +143,7 @@ jobs:
         if: always()
         with:
           name: gitleaks-report
-          path: gitleaks-report.json
+          path: gitleaks-results.sarif
           retention-days: 30
 
   # 5. Build Docker image
