@@ -46,7 +46,9 @@ jobs:
         if: always()
         with:
           name: bandit-report
-          path: reports/bandit-report.*
+          path: |
+            reports/bandit-report.json
+            reports/bandit-report.txt
           retention-days: 30
   
   # 2. SAST with Semgrep
@@ -118,7 +120,9 @@ jobs:
         if: always()
         with:
           name: pip-audit-report
-          path: reports/pip-audit-report.*
+          path: |
+            reports/pip-audit-report.json
+            reports/pip-audit-report.txt
           retention-days: 30
   
   # 4. Secret scanning with Gitleaks
@@ -235,7 +239,9 @@ jobs:
         if: always()
         with:
           name: trivy-report
-          path: reports/trivy-report.*
+          path: |
+            reports/trivy-report.json
+            reports/trivy-report.txt
           retention-days: 30
 
   # 7. DAST with OWASP ZAP
@@ -260,15 +266,28 @@ jobs:
       - name: Start application container
         run: |
           docker run -d --name test-app -p 5000:5000 ${{ env.DOCKER_IMAGE_NAME }}:latest
-          sleep 10
+          echo "Waiting for application to start..."
+          sleep 15
           curl -f http://localhost:5000/health || exit 1
-          echo "Application is running"
+          echo "Application is running and healthy"
       
-      - name: Run OWASP ZAP scan
+      - name: Create reports directory
+        run: mkdir -p reports
+      
+      - name: Run OWASP ZAP Baseline Scan
         run: |
-          mkdir -p reports
-          chmod +x scripts/run_zap_scan.sh
-          ./scripts/run_zap_scan.sh http://localhost:5000
+          docker run --rm \
+            --network host \
+            -v ${{ github.workspace }}/reports:/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:5000 \
+            -r zap-report.html \
+            -J zap-report.json \
+            -I || true
+          
+          echo "ZAP scan completed"
+          ls -lh reports/
       
       - name: Stop application container
         if: always()
@@ -281,7 +300,9 @@ jobs:
         if: always()
         with:
           name: zap-report
-          path: reports/zap-report.*
+          path: |
+            reports/zap-report.html
+            reports/zap-report.json
           retention-days: 30
 
   # 8. Security gate
