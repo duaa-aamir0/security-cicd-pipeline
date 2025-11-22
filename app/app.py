@@ -34,10 +34,6 @@ def echo():
         return jsonify({"echo": data}), 200     # returns posted data
     return jsonify({"error": "No data provided"}), 400
 
-def unsafe_password():
-    password = "admin123" 
-    return password
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
