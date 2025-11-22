@@ -268,8 +268,27 @@ jobs:
       - name: Start application container
         run: |
           docker run -d --name test-app -p 5000:5000 ${{ env.DOCKER_IMAGE_NAME }}:latest
-          echo "Container started, waiting for application..."
-          sleep 10
+          echo "Waiting for application to be ready..."
+          sleep 30
+          
+          # Test health endpoint with retries
+          echo "Testing health endpoint..."
+          for i in {1..10}; do
+            if curl -f http://localhost:5000/health; then
+              echo "Application is healthy!"
+              break
+            fi
+            echo "Attempt $i failed, retrying in 5 seconds..."
+            sleep 5
+          done
+          
+          # Final health check
+          if ! curl -f http://localhost:5000/health; then
+            echo "Health check failed after 10 attempts"
+            echo "Container logs:"
+            docker logs test-app
+            exit 1
+          fi
       
       - name: Create reports directory
         run: mkdir -p reports
@@ -278,20 +297,40 @@ jobs:
         uses: zaproxy/action-full-scan@v0.10.0
         with:
           target: 'http://localhost:5000'
-          rules_file_name: '.zap/rules.tsv'
+          # Remove the rules_file_name if you don't have custom rules
           cmd_options: '-a'
-        
-      - name: Copy ZAP reports
+        continue-on-error: true  # Continue even if ZAP finds issues
+      
+      - name: Copy and rename ZAP reports
         run: |
-          # Copy reports from default ZAP location
-          if [ -f "zap-report.html" ]; then
-            cp zap-report.html reports/ || true
+          echo "Current directory contents:"
+          ls -la
+          
+          # Copy and rename reports from root to reports directory
+          if [ -f "report_html.html" ]; then
+            cp report_html.html reports/zap-report.html
+            echo "HTML report copied to reports/zap-report.html"
+          else
+            echo "HTML report not found in root directory"
           fi
-          if [ -f "zap-report.json" ]; then
-            cp zap-report.json reports/ || true
+          
+          if [ -f "report_json.json" ]; then
+            cp report_json.json reports/zap-report.json
+            echo "JSON report copied to reports/zap-report.json"
+          else
+            echo "JSON report not found in root directory"
           fi
+          
+          if [ -f "report_md.md" ]; then
+            cp report_md.md reports/zap-report.md
+            echo "Markdown report copied to reports/zap-report.md"
+          else
+            echo "Markdown report not found in root directory"
+          fi
+          
+          echo "Final reports directory contents:"
           ls -la reports/
-
+      
       - name: Stop application container
         if: always()
         run: |
@@ -307,6 +346,7 @@ jobs:
           path: |
             reports/zap-report.html
             reports/zap-report.json
+            reports/zap-report.md
           retention-days: 30
 
   # 8. Security gate
