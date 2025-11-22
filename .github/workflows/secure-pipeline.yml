@@ -27,7 +27,9 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       
       - name: Install Bandit
-        run: pip install bandit==1.7.5
+        run: |
+          pip install pbr
+          pip install bandit==1.7.5
       
       - name: Create reports directory
         run: mkdir -p reports
