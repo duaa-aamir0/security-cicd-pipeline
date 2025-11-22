@@ -300,29 +300,30 @@ jobs:
           exit 1
       
       - name: Create reports directory
-        run: |
-          mkdir -p reports
-          chmod 777 reports
+        run: mkdir -p reports
       
       - name: Run OWASP ZAP Baseline Scan
         run: |
-          docker run --rm --network host -u $(id -u):$(id -g) -v ${{ github.workspace }}/reports:/zap/wrk:rw \
+          docker run --rm --network host -v ${{ github.workspace }}/reports:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t http://localhost:5000 -r zap-report.html -J zap-report.json -I || true
           
           echo "ZAP scan completed"
-          ls -lh reports/ || echo "No reports directory"
-      
-      - name: Fix file permissions if needed
+        
+      - name: Check if reports were created
         run: |
-          # Ensure the reports are accessible
-          if [ -f reports/zap-report.html ]; then
-            chmod 644 reports/zap-report.html
+          echo "Checking for ZAP reports..."
+          ls -la reports/ || echo "No reports directory"
+          if [ -f "reports/zap-report.html" ]; then
+            echo "ZAP HTML report created successfully"
+          else
+            echo "WARNING: ZAP HTML report was not created"
           fi
-          if [ -f reports/zap-report.json ]; then
-            chmod 644 reports/zap-report.json
+          if [ -f "reports/zap-report.json" ]; then
+            echo "ZAP JSON report created successfully"
+          else
+            echo "WARNING: ZAP JSON report was not created"
           fi
-          ls -la reports/ 2>/dev/null || echo "No reports found"
 
       - name: Stop application container
         if: always()
