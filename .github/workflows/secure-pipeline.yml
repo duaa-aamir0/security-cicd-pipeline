@@ -299,7 +299,7 @@ jobs:
           target: 'http://localhost:5000'
           # Remove the rules_file_name if you don't have custom rules
           cmd_options: '-a'
-          allow_issue: false
+          allow_issue_writing: false
         continue-on-error: true  # Continue even if ZAP finds issues
       
       - name: Copy and rename ZAP reports
