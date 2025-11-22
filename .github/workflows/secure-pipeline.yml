@@ -300,6 +300,7 @@ jobs:
           # Remove the rules_file_name if you don't have custom rules
           cmd_options: '-a'
           allow_issue_writing: false
+          artifact_name: zap-report
         continue-on-error: true  # Continue even if ZAP finds issues
       
       - name: Copy and rename ZAP reports
