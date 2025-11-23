@@ -1,39 +1,43 @@
-# a minimal functional flask app for security scanning demo
+# vulnerable code. 
+# it contains security issues that bandir should detect
 
-from flask import Flask, request, jsonify, render_template_string
 import os
+import pickle
+import subprocess
+import requests
+import random
 
-app = Flask(__name__)
+# 1. hardcoded credentials
+API_KEY = "sk-1234567890abcdef"
+PASSWORD = "admin123"
 
-# HTML template
-HOME_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Security CI/CD Pipeline</title>
-</head>
-<body>
-    <h1>Security CI/CD Pipeline</h1>
-    <p>This is a simple Flask application used to demonstrate security scanning.</p>
-</body>
-</html>
-"""
+# 2. SQL injection
+def unsafe_query(user_input):
+    query = "SELECT * FROM users WHERE name = '" + user_input + "'"
+    return query
 
-@app.route('/')
-def home():
-    return render_template_string(HOME_TEMPLATE)
+# 3. command injection
+def unsafe_command(user_input):
+    os.system("ping " + user_input)
 
-@app.route('/health')
-def health():
-    return jsonify({"status": "healthy", "service": "security-pipeline"}), 200
+# 4. insecure deserialization
+def unsafe_deserialize(data):
+    return pickle.loads(data)
 
-@app.route('/api/echo', methods=['POST'])
-def echo():
-    data = request.get_json()
-    if data:
-        return jsonify({"echo": data}), 200     # returns posted data
-    return jsonify({"error": "No data provided"}), 400
+# 5. using shell=True (Bandit)
+def unsafe_subprocess(user_input):
+    subprocess.call("ls " + user_input, shell=True)     # subprocess shell injection
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+# 6. insecure random
+def generate_token():
+    return random.randint(1000, 9999)
+
+# 7. using HTTP instead of HTTPS
+def insecure_request():
+    response = requests.get("http://httpforever.com")
+    return response.text
+
+# eval() usage
+def unsafe_eval(user_input):
+    result = eval(user_input)
+    return result
