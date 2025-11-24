@@ -1,0 +1,597 @@
+name: Security CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.13'
+  DOCKER_IMAGE_NAME: security-app
+
+jobs:
+  # 1. SAST with Bandit
+  bandit-sast:
+    name: Bandit SAST Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Bandit
+        run: |
+          pip install pbr
+          pip install bandit==1.7.5
+      
+      - name: Create reports directory
+        run: mkdir -p reports
+      
+      - name: Run Bandit scan
+        run: |
+          bandit -r app/ -f json -o reports/bandit-report.json || true
+          bandit -r app/ -f txt -o reports/bandit-report.txt || true
+          echo "Bandit scan completed"
+      
+      - name: Check Bandit results
+        run: python scripts/check_reports.py reports/bandit-report.json bandit
+      
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: |
+            reports/bandit-report.json
+            reports/bandit-report.txt
+          retention-days: 30
+  
+  # 2. SAST with Semgrep
+  semgrep-sast:
+    name: Semgrep SAST Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Semgrep
+        run: pip install semgrep
+      
+      - name: Create reports directory
+        run: mkdir -p reports
+      
+      - name: Run Semgrep scan
+        run: |
+          semgrep scan \
+            --config="p/owasp-top-ten" \
+            --json \
+            --output=reports/semgrep-report.json \
+            --error || true
+      
+      - name: Check Semgrep results
+        run: |
+          if [ ! -f "reports/semgrep-report.json" ]; then
+            echo "Semgrep report not generated"
+            exit 1
+          fi
+
+          error_count=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' reports/semgrep-report.json)
+
+          if [ "$error_count" -gt 0 ]; then
+            echo "Semgrep found $error_count ERROR-level issues"
+            exit 1
+          else
+            echo "No ERROR-level issues found (warnings allowed)"
+          fi
+
+      
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-report
+          path: reports/semgrep-report.json
+          retention-days: 30
+  
+  # 3. Dependency scanning with pip-audit
+  pip-audit-scan:
+    name: pip-audit Dependency Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Install pip-audit
+        run: pip install pip-audit==2.6.1
+      
+      - name: Create reports directory
+        run: mkdir -p reports
+      
+      - name: Run pip-audit
+        run: |
+          pip-audit --format json --output reports/pip-audit-report.json || true
+          pip-audit --output reports/pip-audit-report.txt || true
+          echo "pip-audit scan completed"
+      
+      - name: Check pip-audit results
+        run: python scripts/check_reports.py reports/pip-audit-report.json pip-audit
+      
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-report
+          path: |
+            reports/pip-audit-report.json
+            reports/pip-audit-report.txt
+          retention-days: 30
+  
+  # 4. Secret scanning with Gitleaks
+  gitleaks-scan:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Run Gitleaks scan
+        run: |
+          # Install gitleaks
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar xz
+          # Scan entire codebase
+          ./gitleaks detect --source ./app --no-git --exit-code 1 --report-format sarif --report-path results.sarif
+        continue-on-error: true
+      
+      - name: Create reports directory
+        if: always()
+        run: mkdir -p reports
+      
+      - name: Copy Gitleaks report
+        if: always()
+        run: |
+          if [ -f results.sarif ]; then
+            cp results.sarif reports/gitleaks-report.sarif
+          else
+            echo "[]" > reports/gitleaks-report.json
+          fi
+      
+      - name: Check Gitleaks results
+        run: |
+          if [ -f "reports/gitleaks-report.sarif" ]; then
+            # Count findings in SARIF report
+            count=$(jq '.runs[0].results | length' reports/gitleaks-report.sarif)
+            if [ "$count" -gt 0 ]; then
+              echo "❌ Gitleaks found $count secrets"
+              exit 1
+            else
+              echo "✅ Gitleaks scan passed"
+            fi
+          else
+            echo "❌ Gitleaks report not generated"
+            exit 1
+          fi
+
+      - name: Upload Gitleaks report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-report
+          path: reports/gitleaks-report.*
+          retention-days: 30
+
+  # 5. Build Docker image
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [bandit-sast, semgrep-sast, pip-audit-scan, gitleaks-scan]
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} ${{ env.DOCKER_IMAGE_NAME }}:latest
+          echo "Docker image built successfully"
+      
+      - name: Save Docker image
+        run: |
+          mkdir -p docker-images
+          docker save ${{ env.DOCKER_IMAGE_NAME }}:latest -o docker-images/image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: docker-images/image.tar
+          retention-days: 1
+
+  # 6. Container scanning with Trivy
+  trivy-scan:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    needs: docker-build
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: docker-images
+      
+      - name: Load Docker image
+        run: docker load -i docker-images/image.tar
+      
+      - name: Create reports directory
+        run: mkdir -p reports
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          format: 'json'
+          output: 'reports/trivy-report.json'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Run Trivy (human readable)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          format: 'table'
+          output: 'reports/trivy-report.txt'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+      
+      - name: Check Trivy results
+        run: python scripts/check_reports.py reports/trivy-report.json trivy
+      
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-report
+          path: |
+            reports/trivy-report.json
+            reports/trivy-report.txt
+          retention-days: 30
+
+  # 7. DAST with OWASP ZAP
+  zap-dast:
+    name: OWASP ZAP DAST Scan
+    runs-on: ubuntu-latest
+    needs: docker-build
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: docker-images
+      
+      - name: Load Docker image
+        run: docker load -i docker-images/image.tar
+      
+      - name: Clean up
+        run: |
+          rm -f database.db good.db || true
+          docker stop test-app || true
+          docker rm test-app || true
+      
+      - name: Start application container
+        run: |
+          docker run -d --name test-app -p 5000:5000 ${{ env.DOCKER_IMAGE_NAME }}:latest
+          echo "Waiting for application to be ready..."
+          sleep 10
+          
+          # Try multiple health check approaches
+          max_attempts=30
+          attempt=0
+          until [ $attempt -eq $max_attempts ]; do
+            # Try root endpoint
+            if curl -s -f http://localhost:5000/ > /dev/null 2>&1; then
+              echo "Application is ready!"
+              break
+            fi
+            
+            # Try health endpoint if it exists
+            if curl -s -f http://localhost:5000/health > /dev/null 2>&1; then
+              echo "Application is ready!"
+              break
+            fi
+            
+            echo "Waiting for application... attempt $((attempt+1))/$max_attempts"
+            sleep 2
+            attempt=$((attempt+1))
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "Application may not be ready, checking logs..."
+            docker logs test-app
+            echo "Continuing anyway to allow ZAP to scan..."
+            # Don't exit - let ZAP try to scan anyway
+          else
+            echo "Application is ready!"
+          fi
+      
+      - name: Create reports directory with correct permissions
+        run: |
+          mkdir -p $(pwd)/reports
+          chmod -R 777 $(pwd)/reports
+      
+      - name: Pull ZAP Docker image
+        run: docker pull ghcr.io/zaproxy/zaproxy:stable
+      
+      - name: Run OWASP ZAP Full Scan
+        run: |
+          docker run --rm \
+            -v $(pwd):/zap/wrk:rw \
+            --network=host \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-full-scan.py \
+            -t http://127.0.0.1:5000 \
+            -J reports/zap-report.json \
+            -w reports/zap-report.md \
+            -r reports/zap-report.html \
+            -T 30 \
+            -I \
+            -z "-config spider.maxDuration=15 \
+                -config spider.maxDepth=15 \
+                -config spider.maxChildren=100 \
+                -config spider.postform=true \
+                -config spider.processform=true"
+        continue-on-error: true
+      
+      - name: Fix report permissions
+        if: always()
+        run: |
+          sudo chown -R $(whoami):$(whoami) reports/ || true
+          chmod -R 755 reports/ || true
+      
+      - name: Check if reports were generated
+        if: always()
+        run: |
+          echo "Reports directory contents:"
+          ls -lh reports/ || echo "Reports directory not found"
+          
+          if [ -f "reports/zap-report.json" ]; then
+            echo "✓ JSON report found"
+            echo "Report size: $(stat -c%s reports/zap-report.json) bytes"
+            echo ""
+            echo "Number of alerts:"
+            cat reports/zap-report.json | python3 -m json.tool | grep -c '"alert"' || echo "0"
+          else
+            echo "✗ JSON report not found"
+          fi
+      
+      - name: Check ZAP results
+        if: always()
+        run: |
+          if [ -f "reports/zap-report.json" ]; then
+            python scripts/check_reports.py reports/zap-report.json zap
+          else
+            echo "ZAP report not found, skipping security check"
+          fi
+      
+      - name: Stop application container
+        if: always()
+        run: |
+          docker logs test-app || true
+          docker stop test-app || true
+          docker rm test-app || true
+      
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: reports/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # 8. Security gate
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    needs: [bandit-sast, semgrep-sast, pip-audit-scan, gitleaks-scan, trivy-scan, zap-dast]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download all security reports
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-reports
+      
+      - name: Debug - Show downloaded files
+        run: |
+          echo "=== DOWNLOADED FILES ==="
+          find downloaded-reports -type f -name "*.json" -o -name "*.sarif"
+          echo ""
+            
+      - name: Check actual security results from reports
+        run: |
+          echo "=== CHECKING ACTUAL SECURITY REPORTS ==="
+          any_failed=false
+          
+          # Check Bandit results - FAILS only on HIGH severity issues
+          if [ -f "downloaded-reports/bandit-report/bandit-report.json" ]; then
+            bandit_high_issues=$(jq '[.results[] | select(.issue_severity == "HIGH")] | length' downloaded-reports/bandit-report/bandit-report.json 2>/dev/null || echo "0")
+            if [ "$bandit_high_issues" -gt 0 ]; then
+              echo "Bandit: FAILED - Found $bandit_high_issues HIGH severity issues"
+              any_failed=true
+            else
+              bandit_total=$(jq '.results | length' downloaded-reports/bandit-report/bandit-report.json 2>/dev/null || echo "0")
+              echo "Bandit: PASSED - $bandit_total total issues, but no HIGH severity"
+            fi
+          else
+            echo "Bandit: Report not found"
+            any_failed=true
+          fi
+          
+          # Check Semgrep results - FAILS only on ERROR severity issues
+          if [ -f "downloaded-reports/semgrep-report/semgrep-report.json" ]; then
+            semgrep_error_issues=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' downloaded-reports/semgrep-report/semgrep-report.json 2>/dev/null || echo "0")
+            if [ "$semgrep_error_issues" -gt 0 ]; then
+              echo "Semgrep: FAILED - Found $semgrep_error_issues ERROR severity issues"
+              any_failed=true
+            else
+              semgrep_total=$(jq '.results | length' downloaded-reports/semgrep-report/semgrep-report.json 2>/dev/null || echo "0")
+              echo "Semgrep: PASSED - $semgrep_total total issues, but no ERROR severity"
+            fi
+          else
+            echo "Semgrep: Report not found"
+            any_failed=true
+          fi
+          
+          # Check pip-audit results - FAILS on ANY vulnerabilities
+          if [ -f "downloaded-reports/pip-audit-report/pip-audit-report.json" ]; then
+            pip_audit_vulns=$(jq '[.dependencies[].vulns[]?] | length' downloaded-reports/pip-audit-report/pip-audit-report.json 2>/dev/null || echo "0")
+            if [ "$pip_audit_vulns" -gt 0 ]; then
+              echo "pip-audit: FAILED - Found $pip_audit_vulns vulnerabilities"
+              any_failed=true
+            else
+              echo "pip-audit: PASSED - No vulnerabilities found"
+            fi
+          else
+            echo "pip-audit: Report not found"
+            any_failed=true
+          fi
+          
+          # Check Gitleaks results - FAILS on ANY secrets found
+          if [ -f "downloaded-reports/gitleaks-report/gitleaks-report.sarif" ]; then
+            gitleaks_secrets=$(jq '.runs[0].results | length' downloaded-reports/gitleaks-report/gitleaks-report.sarif 2>/dev/null || echo "0")
+            if [ "$gitleaks_secrets" -gt 0 ]; then
+              echo "Gitleaks: FAILED - Found $gitleaks_secrets secrets"
+              any_failed=true
+            else
+              echo "Gitleaks: PASSED - No secrets found"
+            fi
+          elif [ -f "downloaded-reports/gitleaks-report/gitleaks-report.json" ]; then
+            gitleaks_content=$(cat downloaded-reports/gitleaks-report/gitleaks-report.json)
+            if [ "$gitleaks_content" = "[]" ] || [ -z "$gitleaks_content" ]; then
+              echo "Gitleaks: PASSED - No secrets found"
+            else
+              gitleaks_secrets=$(jq 'length' downloaded-reports/gitleaks-report/gitleaks-report.json 2>/dev/null || echo "1")
+              if [ "$gitleaks_secrets" -gt 0 ]; then
+                echo "Gitleaks: FAILED - Found secrets"
+                any_failed=true
+              else
+                echo "Gitleaks: PASSED - No secrets found"
+              fi
+            fi
+          else
+            echo "Gitleaks: Report not found"
+            any_failed=true
+          fi
+          
+          # Check Trivy results - FAILS only on HIGH/CRITICAL vulnerabilities
+          if [ -f "downloaded-reports/trivy-report/trivy-report.json" ]; then
+            # Count HIGH/CRITICAL from both Vulnerabilities and Secrets
+            trivy_high_critical=$(jq '
+              [
+                .Results[]? | 
+                (
+                  (.Vulnerabilities? // [])[] | select(.Severity == "HIGH" or .Severity == "CRITICAL")
+                ),
+                (
+                  (.Secrets? // [])[] | select(.Severity == "HIGH" or .Severity == "CRITICAL")
+                )
+              ] | length
+            ' downloaded-reports/trivy-report/trivy-report.json 2>/dev/null || echo "0")
+            
+            if [ "$trivy_high_critical" -gt 0 ]; then
+              echo "Trivy: FAILED - Found $trivy_high_critical HIGH/CRITICAL vulnerabilities"
+              any_failed=true
+            else
+              trivy_total=$(jq '[.Results[]? | (.Vulnerabilities? // [])[] ] | length' downloaded-reports/trivy-report/trivy-report.json 2>/dev/null || echo "0")
+              echo "Trivy: PASSED - $trivy_total total vulnerabilities, but no HIGH/CRITICAL"
+            fi
+          else
+            echo "Trivy: Report not found"
+            any_failed=true
+          fi
+          
+          # Check ZAP results - FAILS only on HIGH/MEDIUM risk alerts
+          if [ -f "downloaded-reports/zap-report/zap-report.json" ]; then
+            # ZAP report structure: .site is an array, riskcode can be string or number
+            zap_high_medium=$(jq '
+              [
+                .site[]?.alerts[]? | 
+                select(
+                  (.riskcode == "2" or .riskcode == 2 or .riskcode == "3" or .riskcode == 3)
+                  and .alert != "HTTP Only Site"
+                )
+              ] | length
+            ' downloaded-reports/zap-report/zap-report.json 2>/dev/null || echo "0")
+            
+            if [ "$zap_high_medium" -gt 0 ]; then
+              echo "OWASP ZAP: FAILED - Found $zap_high_medium HIGH/MEDIUM risk alerts"
+              any_failed=true
+            else
+              zap_total=$(jq '[.site[]?.alerts[]?] | length' downloaded-reports/zap-report/zap-report.json 2>/dev/null || echo "0")
+              echo "OWASP ZAP: PASSED - $zap_total total alerts, but no HIGH/MEDIUM risk"
+            fi
+          else
+            echo "OWASP ZAP: Report not found"
+            any_failed=true
+          fi
+          
+          echo "======================================"
+          
+          if [ "$any_failed" = true ]; then
+            echo "❌ SECURITY GATE FAILED"
+            echo "Security issues detected. Check the detailed reports above."
+            exit 1
+          else
+            echo "✅ SECURITY GATE PASSED"
+            echo "All security checks passed!"
+          fi
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Security Gate Result" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "### ✅ PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "All security checks passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "Security issues detected. Check the Artifacts for reports." >> $GITHUB_STEP_SUMMARY
+          fi

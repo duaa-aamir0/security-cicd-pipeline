@@ -1,0 +1,14 @@
+Flask==3.1.2
+#Flask==2.0.3
+
+gunicorn==23.0.0    # WSGI server for production
+
+defusedxml==0.7.1   # XML safety
+requests==2.32.4
+
+# Testing
+pytest==9.0.1
+pytest-flask==1.3.0     # plugin
+
+Werkzeug==3.1.3     # Security scanning will check these dependencies
+#Werkzeug==2.0.3
