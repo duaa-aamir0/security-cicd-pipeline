@@ -1,11 +1,12 @@
 name: Security CI/CD Pipeline
 
+# Trigger conditions for the pipeline
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch:    # Allow manual triggering from GitHub
 
 env:
   PYTHON_VERSION: '3.13'
@@ -16,10 +17,11 @@ jobs:
   bandit-sast:
     name: Bandit SAST Scan
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: true   # Continue even if this job fails to allow other security scans to run
     
     steps:
       - name: Checkout code
+        # download repo to GitHub Actions runner
         uses: actions/checkout@v4
       
       - name: Set up Python
@@ -35,6 +37,7 @@ jobs:
       - name: Create reports directory
         run: mkdir -p reports
       
+        # Run Bandit on app directory, output in JSON and text formats
       - name: Run Bandit scan
         run: |
           bandit -r app/ -f json -o reports/bandit-report.json || true
@@ -46,7 +49,8 @@ jobs:
       
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
-        if: always()
+        # Upload report even if job fails for analysis
+        if: always()    
         with:
           name: bandit-report
           path: |
@@ -71,14 +75,12 @@ jobs:
         run: mkdir -p reports
       
       - name: Run Semgrep scan
+        # Scan using OWASP Top Ten security rules
         run: |
-          semgrep scan \
-            --config="p/owasp-top-ten" \
-            --json \
-            --output=reports/semgrep-report.json \
-            --error || true
+          semgrep scan --config="p/owasp-top-ten" --json --output=reports/semgrep-report.json --error || true
       
       - name: Check Semgrep results
+        # check for ERROR severity issues
         run: |
           if [ ! -f "reports/semgrep-report.json" ]; then
             echo "Semgrep report not generated"
@@ -91,7 +93,7 @@ jobs:
             echo "Semgrep found $error_count ERROR-level issues"
             exit 1
           else
-            echo "No ERROR-level issues found (warnings allowed)"
+            echo "No ERROR-level issues found."
           fi
 
       
@@ -128,6 +130,7 @@ jobs:
         run: mkdir -p reports
       
       - name: Run pip-audit
+        # Audit dependencies for known vulnerabilities
         run: |
           pip-audit --format json --output reports/pip-audit-report.json || true
           pip-audit --output reports/pip-audit-report.txt || true
@@ -150,19 +153,19 @@ jobs:
   gitleaks-scan:
     name: Gitleaks Secret Scan
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: true   
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0    # Fetch full history
       
       - name: Run Gitleaks scan
         run: |
           # Install gitleaks
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar xz
-          # Scan entire codebase
+          # Scan app directory without git history
           ./gitleaks detect --source ./app --no-git --exit-code 1 --report-format sarif --report-path results.sarif
         continue-on-error: true
       
@@ -180,18 +183,18 @@ jobs:
           fi
       
       - name: Check Gitleaks results
+        # Count findings in SARIF report
         run: |
           if [ -f "reports/gitleaks-report.sarif" ]; then
-            # Count findings in SARIF report
             count=$(jq '.runs[0].results | length' reports/gitleaks-report.sarif)
             if [ "$count" -gt 0 ]; then
-              echo "❌ Gitleaks found $count secrets"
+              echo "Gitleaks found $count secrets"
               exit 1
             else
-              echo "✅ Gitleaks scan passed"
+              echo "Gitleaks scan passed"
             fi
           else
-            echo "❌ Gitleaks report not generated"
+            echo "Gitleaks report not generated"
             exit 1
           fi
 
@@ -207,7 +210,7 @@ jobs:
   docker-build:
     name: Build Docker Image
     runs-on: ubuntu-latest
-    needs: [bandit-sast, semgrep-sast, pip-audit-scan, gitleaks-scan]
+    needs: [bandit-sast, semgrep-sast, pip-audit-scan, gitleaks-scan]   # Only build if all security scans complete
     continue-on-error: true
 
     steps:
@@ -218,12 +221,14 @@ jobs:
         uses: docker/setup-buildx-action@v3
       
       - name: Build Docker image
+        # Build and tag Docker image with commit SHA and latest
         run: |
           docker build -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} ${{ env.DOCKER_IMAGE_NAME }}:latest
           echo "Docker image built successfully"
       
       - name: Save Docker image
+        # Save as tar file for later use
         run: |
           mkdir -p docker-images
           docker save ${{ env.DOCKER_IMAGE_NAME }}:latest -o docker-images/image.tar
@@ -259,7 +264,7 @@ jobs:
         run: mkdir -p reports
       
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@master     # trivy github action
         with:
           image-ref: ${{ env.DOCKER_IMAGE_NAME }}:latest
           format: 'json'
@@ -307,6 +312,7 @@ jobs:
         run: docker load -i docker-images/image.tar
       
       - name: Clean up
+        # Clean up any previous runs
         run: |
           rm -f database.db good.db || true
           docker stop test-app || true
@@ -343,41 +349,32 @@ jobs:
             echo "Application may not be ready, checking logs..."
             docker logs test-app
             echo "Continuing anyway to allow ZAP to scan..."
-            # Don't exit - let ZAP try to scan anyway
           else
             echo "Application is ready!"
           fi
       
-      - name: Create reports directory with correct permissions
+      - name: Create reports directory
+        # give directory rwe permission
         run: |
           mkdir -p $(pwd)/reports
           chmod -R 777 $(pwd)/reports
       
       - name: Pull ZAP Docker image
-        run: docker pull ghcr.io/zaproxy/zaproxy:stable
+        run: docker pull ghcr.io/zaproxy/zaproxy:stable   # get zap as docker container from github
       
       - name: Run OWASP ZAP Full Scan
         run: |
-          docker run --rm \
-            -v $(pwd):/zap/wrk:rw \
-            --network=host \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-full-scan.py \
+          docker run --rm -v $(pwd):/zap/wrk:rw --network=host \
+            ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py \
             -t http://127.0.0.1:5000 \
-            -J reports/zap-report.json \
-            -w reports/zap-report.md \
-            -r reports/zap-report.html \
-            -T 30 \
-            -I \
-            -z "-config spider.maxDuration=15 \
-                -config spider.maxDepth=15 \
-                -config spider.maxChildren=100 \
-                -config spider.postform=true \
-                -config spider.processform=true"
+            -J reports/zap-report.json -w reports/zap-report.md -r reports/zap-report.html \
+            -T 30 -I \
+            -z "-config spider.maxDuration=15 -config spider.maxDepth=15 -config spider.maxChildren=100 -config spider.postform=true -config spider.processform=true"
         continue-on-error: true
       
       - name: Fix report permissions
         if: always()
+        # give ownership of reports dir to current user (rwe) and group (re). 
         run: |
           sudo chown -R $(whoami):$(whoami) reports/ || true
           chmod -R 755 reports/ || true
@@ -389,13 +386,13 @@ jobs:
           ls -lh reports/ || echo "Reports directory not found"
           
           if [ -f "reports/zap-report.json" ]; then
-            echo "✓ JSON report found"
+            echo "JSON report found"
             echo "Report size: $(stat -c%s reports/zap-report.json) bytes"
             echo ""
             echo "Number of alerts:"
             cat reports/zap-report.json | python3 -m json.tool | grep -c '"alert"' || echo "0"
           else
-            echo "✗ JSON report not found"
+            echo "JSON report not found"
           fi
       
       - name: Check ZAP results
@@ -438,19 +435,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: downloaded-reports
-      
-      - name: Debug - Show downloaded files
+
+      - name: Check security results from reports
         run: |
-          echo "=== DOWNLOADED FILES ==="
-          find downloaded-reports -type f -name "*.json" -o -name "*.sarif"
-          echo ""
-            
-      - name: Check actual security results from reports
-        run: |
-          echo "=== CHECKING ACTUAL SECURITY REPORTS ==="
+          echo "=== CHECKING SECURITY REPORTS ==="
           any_failed=false
           
-          # Check Bandit results - FAILS only on HIGH severity issues
+          # Check Bandit results - fails on HIGH severity
           if [ -f "downloaded-reports/bandit-report/bandit-report.json" ]; then
             bandit_high_issues=$(jq '[.results[] | select(.issue_severity == "HIGH")] | length' downloaded-reports/bandit-report/bandit-report.json 2>/dev/null || echo "0")
             if [ "$bandit_high_issues" -gt 0 ]; then
@@ -465,7 +456,7 @@ jobs:
             any_failed=true
           fi
           
-          # Check Semgrep results - FAILS only on ERROR severity issues
+          # Check Semgrep results - fails on ERROR severity issues
           if [ -f "downloaded-reports/semgrep-report/semgrep-report.json" ]; then
             semgrep_error_issues=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' downloaded-reports/semgrep-report/semgrep-report.json 2>/dev/null || echo "0")
             if [ "$semgrep_error_issues" -gt 0 ]; then
@@ -480,7 +471,7 @@ jobs:
             any_failed=true
           fi
           
-          # Check pip-audit results - FAILS on ANY vulnerabilities
+          # Check pip-audit results - fails on ANY vulnerabilities
           if [ -f "downloaded-reports/pip-audit-report/pip-audit-report.json" ]; then
             pip_audit_vulns=$(jq '[.dependencies[].vulns[]?] | length' downloaded-reports/pip-audit-report/pip-audit-report.json 2>/dev/null || echo "0")
             if [ "$pip_audit_vulns" -gt 0 ]; then
@@ -494,7 +485,7 @@ jobs:
             any_failed=true
           fi
           
-          # Check Gitleaks results - FAILS on ANY secrets found
+          # Check Gitleaks results - fails on ANY secrets found
           if [ -f "downloaded-reports/gitleaks-report/gitleaks-report.sarif" ]; then
             gitleaks_secrets=$(jq '.runs[0].results | length' downloaded-reports/gitleaks-report/gitleaks-report.sarif 2>/dev/null || echo "0")
             if [ "$gitleaks_secrets" -gt 0 ]; then
@@ -521,9 +512,8 @@ jobs:
             any_failed=true
           fi
           
-          # Check Trivy results - FAILS only on HIGH/CRITICAL vulnerabilities
+          # Check Trivy results - fails on HIGH/CRITICAL vulnerabilities
           if [ -f "downloaded-reports/trivy-report/trivy-report.json" ]; then
-            # Count HIGH/CRITICAL from both Vulnerabilities and Secrets
             trivy_high_critical=$(jq '
               [
                 .Results[]? | 
@@ -548,9 +538,8 @@ jobs:
             any_failed=true
           fi
           
-          # Check ZAP results - FAILS only on HIGH/MEDIUM risk alerts
+          # Check ZAP results - fails on HIGH/MEDIUM risk alerts
           if [ -f "downloaded-reports/zap-report/zap-report.json" ]; then
-            # ZAP report structure: .site is an array, riskcode can be string or number
             zap_high_medium=$(jq '
               [
                 .site[]?.alerts[]? | 
@@ -576,11 +565,11 @@ jobs:
           echo "======================================"
           
           if [ "$any_failed" = true ]; then
-            echo "❌ SECURITY GATE FAILED"
-            echo "Security issues detected. Check the detailed reports above."
+            echo "SECURITY GATE FAILED"
+            echo "Security issues detected. Check the detailed reports."
             exit 1
           else
-            echo "✅ SECURITY GATE PASSED"
+            echo "SECURITY GATE PASSED"
             echo "All security checks passed!"
           fi
 
@@ -589,9 +578,9 @@ jobs:
         run: |
           echo "## Security Gate Result" >> $GITHUB_STEP_SUMMARY
           if [ "${{ job.status }}" == "success" ]; then
-            echo "### ✅ PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "### PASSED" >> $GITHUB_STEP_SUMMARY
             echo "All security checks passed!" >> $GITHUB_STEP_SUMMARY
           else
-            echo "### ❌ FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "### FAILED" >> $GITHUB_STEP_SUMMARY
             echo "Security issues detected. Check the Artifacts for reports." >> $GITHUB_STEP_SUMMARY
           fi

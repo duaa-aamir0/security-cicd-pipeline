@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-def check_bandit_report(report_path):
+def checkBanditReport(report_path):
     if not os.path.exists(report_path):
         print(f"Report file not found: {report_path}")
         return True  # Pass if no report
@@ -37,7 +37,7 @@ def check_bandit_report(report_path):
         print(f"Error reading report: {e}")
         return False
     
-def check_semgrep_report(report_path):
+def checkSemgrepReport(report_path):
     if not os.path.exists(report_path):
         print(f"Report file not found: {report_path}")
         return True
@@ -70,7 +70,7 @@ def check_semgrep_report(report_path):
         print(f"Error processing Semgrep report: {e}")
         return False
     
-def check_pip_audit_report(report_path):
+def checkPipAuditReport(report_path):
     if not os.path.exists(report_path):
         print(f"Report file not found: {report_path}")
         return True
@@ -104,7 +104,7 @@ def check_pip_audit_report(report_path):
         print(f"Error processing pip-audit report: {e}")
         return False
 
-def check_trivy_report(report_path):
+def checkTrivyReport(report_path):
     if not os.path.exists(report_path):
         print(f"Report file not found: {report_path}")
         return True
@@ -152,7 +152,7 @@ def check_trivy_report(report_path):
         print(f"Error processing Trivy report: {e}")
         return False
 
-def check_gitleaks_report(report_path):
+def checkGitleaksReport(report_path):
     if not os.path.exists(report_path):
         print(f"Report file not found: {report_path}")
         return True
@@ -181,7 +181,7 @@ def check_gitleaks_report(report_path):
         print(f"Error processing Gitleaks report: {e}")
         return False
 
-def check_zap_report(report_path):
+def checkZapReport(report_path):
     if not os.path.exists(report_path):
         print(f"Report file not found: {report_path}")
         return True
@@ -200,10 +200,8 @@ def check_zap_report(report_path):
             site_alerts = site.get('alerts', [])
             all_alerts.extend(site_alerts)
             # Filter for High (3) and Medium (2) risk alerts only
-            high_medium_alerts.extend([
-                alert for alert in site_alerts 
-                if alert.get('riskcode') in ['2', '3']  # FIX: Use strings
-                and alert.get('alert') not in ignored_alerts
+            high_medium_alerts.extend([alert for alert in site_alerts 
+                if alert.get('riskcode') in ['2', '3'] and alert.get('alert') not in ignored_alerts
             ])
         
         print(f"----- OWASP ZAP Results -----")
@@ -214,11 +212,10 @@ def check_zap_report(report_path):
             print("\nHIGH/MEDIUM risk alerts found:")
             for alert in high_medium_alerts[:5]:  # Show first 5 high/medium alerts
                 risk_level = alert.get('riskcode', '0')
-                risk_map = {'0': 'Info', '1': 'Low', '2': 'Medium', '3': 'High'}  # FIX: Use strings
+                risk_map = {'0': 'Info', '1': 'Low', '2': 'Medium', '3': 'High'}  
                 risk_text = risk_map.get(risk_level, 'Unknown')
                 
                 print(f" - {alert.get('alert')} [{risk_text}]")
-                # For ZAP reports, use 'name' instead of 'url'
                 print(f"   Alert: {alert.get('name')}")
                 if alert.get('instances'):
                     print(f"   Instances: {len(alert.get('instances', []))}")
@@ -239,12 +236,12 @@ def main():
     tool_name = sys.argv[2].lower()
 
     checkers = {
-        'bandit': check_bandit_report,
-        'semgrep': check_semgrep_report,
-        'pip-audit': check_pip_audit_report,
-        'trivy': check_trivy_report,
-        'gitleaks': check_gitleaks_report,
-        'zap': check_zap_report,
+        'bandit': checkBanditReport,
+        'semgrep': checkSemgrepReport,
+        'pip-audit': checkPipAuditReport,
+        'trivy': checkTrivyReport,
+        'gitleaks': checkGitleaksReport,
+        'zap': checkZapReport,
     }
 
     checker = checkers.get(tool_name)
